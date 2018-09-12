@@ -1,4 +1,5 @@
 (function() {
+  var path = require('path');
   var $context = this;
   var root; // root context
   var Helper = {
@@ -173,7 +174,7 @@
   };
   var TRANSFORM = {
     memory: {},
-    transform: function(template, data, injection, serialized) {
+    transform: function(template, data, injection, serialized, templatesFolder, formattersFolder) {
       var selector = null;
       if (/#include/.test(JSON.stringify(template))) {
         selector = function(key, value) { return /#include/.test(key) || /#include/.test(value); };
@@ -182,7 +183,7 @@
       if (injection) {
         // resolve template with selector
         var resolved_template = SELECT.select(template, selector, serialized)
-          .transform(data, serialized)
+          .transform(data, serialized, templatesFolder, formattersFolder)
           .root();
         // apply the resolved template on data
         res = SELECT.select(data, null, serialized)
@@ -193,7 +194,7 @@
         // no need for separate template resolution step
         // select the template with selector and transform data
         res = SELECT.select(template, selector, serialized)
-          .transform(data, serialized)
+          .transform(data, serialized, templatesFolder, formattersFolder)
           .root();
       }
       if (serialized) {
@@ -228,7 +229,7 @@
       }
       return null;
     },
-    run: function(template, data) {
+    run: function(template, data, templatesFolder, formattersFolder) {
       var result;
       var fun;
       if (typeof template === 'string') {
@@ -258,7 +259,7 @@
         } else {
           result = [];
           for (var i = 0; i < template.length; i++) {
-            var item = TRANSFORM.run(template[i], data);
+            var item = TRANSFORM.run(template[i], data, templatesFolder, formattersFolder);
             if (item) {
               // only push when the result is not null
               // null could mean #if clauses where nothing matched => In this case instead of rendering 'null', should just skip it completely
@@ -302,7 +303,7 @@
                   var real_template = template[key][1];
 
                   // 1. Parse the first item to assign variables
-                  var parsed_keys = TRANSFORM.run(defs, data);
+                  var parsed_keys = TRANSFORM.run(defs, data, templatesFolder, formattersFolder);
 
                   // 2. modify the data
                   for(var parsed_key in parsed_keys) {
@@ -311,13 +312,13 @@
                   }
 
                   // 2. Pass it into TRANSFORM.run
-                  result = TRANSFORM.run(real_template, data);
+                  result = TRANSFORM.run(real_template, data, templatesFolder, formattersFolder);
                 }
               } else if (fun.name === '#concat') {
                 if (Helper.is_array(template[key])) {
                   result = [];
                   template[key].forEach(function(concat_item) {
-                    var res = TRANSFORM.run(concat_item, data);
+                    var res = TRANSFORM.run(concat_item, data, templatesFolder, formattersFolder);
                     result = result.concat(res);
                   });
 
@@ -333,7 +334,7 @@
                 if (Helper.is_array(template[key])) {
                   result = {};
                   template[key].forEach(function(merge_item) {
-                    var res = TRANSFORM.run(merge_item, data);
+                    var res = TRANSFORM.run(merge_item, data, templatesFolder, formattersFolder);
                     for (var key in res) {
                       result[key] = res[key];
                     }
@@ -398,7 +399,7 @@
                     }
 
                     // run
-                    var loop_item = TRANSFORM.run(template[key], newData[index]);
+                    var loop_item = TRANSFORM.run(template[key], newData[index], templatesFolder, formattersFolder);
 
                     // clean up $index
                     if(typeof newData[index] === 'object') {
@@ -468,14 +469,33 @@
                   // only include if the evaluation is truthy
                   result[key] = filled;
                 }
-              } else {
-                var item = TRANSFORM.run(template[key], data);
+              }
+              else if (fun && fun.name === '#template'){
+                let tokens = fun.expression.split(' ').filter(str => str.trim())
+                let newTemplate, formatterFunction;
+                try{
+                  newTemplate = require(path.join(templatesFolder,tokens[0]))
+                  if(tokens[1] === '#formatExternal'){
+                    formatterFunction = require(path.join(formattersFolder,tokens[2]));
+                  }
+                  else{
+                    formatterFunction = data => data;
+                  }
+                  result[key] = TRANSFORM.run(newTemplate, formatterFunction(data,key), templatesFolder, formattersFolder)
+                }
+                catch(err){
+                  console.err(err)
+                  result[key] = "";
+                }
+              }
+              else {
+                var item = TRANSFORM.run(template[key], data, templatesFolder, formattersFolder);
                 if (item !== undefined) {
                   result[key] = item;
                 }
               }
             } else {
-              var item = TRANSFORM.run(template[key], data);
+              var item = TRANSFORM.run(template[key], data, templatesFolder, formattersFolder);
               if (item !== undefined) {
                 result[key] = item;
               }
@@ -722,7 +742,7 @@
 
       return SELECT;
     },
-    transformWith: function(obj, serialized) {
+    transformWith: function(obj, serialized, templatesFolder, formattersFolder) {
       SELECT.$parsed = [];
       SELECT.$progress = null;
       /*
@@ -756,7 +776,7 @@
         }).forEach(function(selection) {
         //SELECT.$selected.forEach(function(selection) {
           // parse selected
-          var parsed_object = TRANSFORM.run(template, selection.object);
+          var parsed_object = TRANSFORM.run(template, selection.object, templatesFolder, formattersFolder);
 
           // apply the result to root
           SELECT.$selected_root = Helper.resolve(SELECT.$selected_root, selection.path, parsed_object);
@@ -768,7 +788,7 @@
           return a.index - b.index;
         });
       } else {
-        var parsed_object = TRANSFORM.run(template, SELECT.$selected_root);
+        var parsed_object = TRANSFORM.run(template, SELECT.$selected_root, templatesFolder, formattersFolder);
         // apply the result to root
         SELECT.$selected_root = Helper.resolve(SELECT.$selected_root, '', parsed_object);
       }
@@ -779,7 +799,7 @@
       delete Boolean.prototype.$root;
       return SELECT;
     },
-    transform: function(obj, serialized) {
+    transform: function(obj, serialized, templatesFolder, formattersFolder) {
       SELECT.$parsed = [];
       SELECT.$progress = null;
       /*
@@ -814,7 +834,7 @@
           return b.path.length - a.path.length;
         }).forEach(function(selection) {
           // parse selected
-          var parsed_object = TRANSFORM.run(selection.object, data);
+          var parsed_object = TRANSFORM.run(selection.object, data, templatesFolder, formattersFolder);
           // apply the result to root
           SELECT.$template_root = Helper.resolve(SELECT.$template_root, selection.path, parsed_object);
           SELECT.$selected_root = SELECT.$template_root;
@@ -826,7 +846,7 @@
           return a.index - b.index;
         });
       } else {
-        var parsed_object = TRANSFORM.run(SELECT.$selected_root, data);
+        var parsed_object = TRANSFORM.run(SELECT.$selected_root, data, templatesFolder, formattersFolder);
         // apply the result to root
         SELECT.$template_root = Helper.resolve(SELECT.$template_root, '', parsed_object);
         SELECT.$selected_root = SELECT.$template_root;
