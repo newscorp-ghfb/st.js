@@ -1,6 +1,14 @@
 (function() {
+  var path = require('path');
+  var config = {};
   var $context = this;
   var root; // root context
+  var Initialization = function(_config) {
+    if (typeof _config === 'object') {
+      config = _config;
+    }
+    return this;
+  };
   var Helper = {
     is_template: function(str) {
       var re = /\{\{(.+)\}\}/g;
@@ -27,6 +35,23 @@
         o = new_val;
         return o;
       }
+    },
+    load_file: function(defaultRootPath, filePath) {
+      let actualPath = filePath;
+      let loadedFile;
+      try {
+        loadedFile = require(actualPath);
+      } catch (e1) {
+        try {
+          actualPath = `./${filePath}`;
+          loadedFile = require(actualPath);
+        } catch (e2) {
+          actualPath = path.join(defaultRootPath, filePath);
+          loadedFile = require(actualPath);
+        }
+      }
+      console.log(`Loading file ${actualPath}...`);
+      return loadedFile;
     },
   };
   var Conditional = {
@@ -468,7 +493,23 @@
                   // only include if the evaluation is truthy
                   result[key] = filled;
                 }
-              } else {
+              } else if (fun && fun.name === '#template') {
+                const templatesFolder = config.templatesFolder || './';
+                const formattersFolder = config.formattersFolder || './';
+                const tokens = fun.expression.split(' ').filter(str => str.trim());
+                try {
+                  const newTemplate = Helper.load_file(templatesFolder, tokens[0]);
+                  const formatterFunction = tokens[1]
+                    ? Helper.load_file(formattersFolder, tokens[1])
+                    : data => data;
+                  const formattedData = formatterFunction(Object.assign({}, data), key);
+                  result[key] = TRANSFORM.run(newTemplate, formattedData);
+                } catch(err) {
+                  console.error(err)
+                  result[key] = "";
+                }
+              }
+              else {
                 var item = TRANSFORM.run(template[key], data);
                 if (item !== undefined) {
                   result[key] = item;
@@ -925,6 +966,7 @@
       TRANSFORM: TRANSFORM,
       transform: TRANSFORM,
       SELECT: SELECT,
+      init: Initialization,
       Conditional: Conditional,
       Helper: Helper,
       inject: SELECT.inject,
@@ -935,6 +977,7 @@
     exports = x;
   } else {
     $context.ST = {
+      init: Initialization,
       select: SELECT.select,
       inject: SELECT.inject,
       transform: TRANSFORM.transform,
