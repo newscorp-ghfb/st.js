@@ -50,7 +50,7 @@
           loadedFile = require(actualPath);
         }
       }
-      console.log(`Loading file ${actualPath}...`);
+      //console.log(`Loading file ${actualPath}...`);
       return loadedFile;
     },
   };
@@ -494,20 +494,7 @@
                   result[key] = filled;
                 }
               } else if (fun && fun.name === '#template') {
-                const templatesFolder = config.templatesFolder || './';
-                const formattersFolder = config.formattersFolder || './';
-                const tokens = fun.expression.split(' ').filter(str => str.trim());
-                try {
-                  const newTemplate = Helper.load_file(templatesFolder, tokens[0]);
-                  const formatterFunction = tokens[1]
-                    ? Helper.load_file(formattersFolder, tokens[1])
-                    : data => data;
-                  const formattedData = formatterFunction(Object.assign({}, data), key);
-                  result[key] = TRANSFORM.run(newTemplate, formattedData);
-                } catch(err) {
-                  console.error(err)
-                  result[key] = "";
-                }
+                result[key] = TRANSFORM.parseTemplate(template[key],data,key)
               }
               else {
                 var item = TRANSFORM.run(template[key], data);
@@ -528,14 +515,34 @@
       }
       return result;
     },
+    parseTemplate: function(template, data, parentKey){
+      const fun = TRANSFORM.tokenize(template)
+      const templatesFolder = config.templatesFolder || './';
+      const formattersFolder = config.formattersFolder || './';
+      const tokens = fun.expression.split(' ').filter(str => str.trim());
+      try {
+        const newTemplate = Helper.load_file(templatesFolder, tokens[0]);
+        const formatterFunction = tokens[1]
+          ? Helper.load_file(formattersFolder, tokens[1])
+          : data => data;
+        const formattedData = formatterFunction(Object.assign({}, data), parentKey);
+        return TRANSFORM.run(newTemplate, formattedData);
+      } catch(err) {
+        console.error(err)
+        return template;
+      }
+    },
     fillout: function(data, template, raw) {
       // 1. fill out if possible
       // 2. otherwise return the original
       var replaced = template;
       // Run fillout() only if it's a template. Otherwise just return the original string
-      if (Helper.is_template(template)) {
+      
+      if (template && template.indexOf('#template')!=-1) {
+        replaced = TRANSFORM.parseTemplate(template,data)
+      }
+      else if (Helper.is_template(template)){
         var re = /\{\{(.*?)\}\}/g;
-
         // variables are all instances of {{ }} in the current expression
         // for example '{{this.item}} is {{this.user}}'s' has two variables: ['this.item', 'this.user']
         var variables = template.match(re);
