@@ -10,6 +10,31 @@
     return this;
   };
   var Helper = {
+    dottedStringToArray: function(string) {
+      return Array.isArray(string) ? string : string.split(/[\s.]+/).filter(p => p !== '');
+    },
+    get: function(object, properties, defaultValue) {
+      if (!Helper.is_object(object)&&!Helper.is_array(object)&&!Helper.is_string(object)) return defaultValue;
+
+      const props = Helper.dottedStringToArray(properties);
+
+      return props.length === 0
+        ? defaultValue
+        : Helper.baseGet(object, props, defaultValue, props.length);
+    },
+    baseGet: function(object, properties, defaultValue, propertyCount) {
+      if (object === null || object === undefined) return defaultValue;
+
+      const currentIndex = properties.length - propertyCount;
+      const property = properties[currentIndex];
+      // eslint-disable-next-line no-prototype-builtins
+      const hasProperty = object.hasOwnProperty(property);
+      const value = hasProperty ? object[property] : defaultValue;
+
+      return !hasProperty || propertyCount <= 1
+        ? value
+        : Helper.baseGet(object[property], properties, defaultValue, propertyCount - 1);
+    },
     is_template: function(str) {
       var re = /\{\{(.+)\}\}/g;
       return re.test(str);
@@ -22,6 +47,12 @@
           (item.length === 0 || (item.length > 0 && (item.length - 1) in item))
         )
       );
+    },
+    is_object: function(item){
+      return item && typeof item === 'object'
+    },
+    is_string: function(str){
+      return typeof arrayOrString === 'string';
     },
     resolve: function(o, path, new_val) {
       // 1. Takes any object
@@ -338,6 +369,13 @@
                   // 2. Pass it into TRANSFORM.run
                   result = TRANSFORM.run(real_template, data);
                 }
+              } else if(fun.name === '#template'){
+                if(Helper.is_object(template[key])){
+                  result = TRANSFORM.parseTemplate(data, template[key])
+                }
+                else{
+                  result = template[key]
+                }
               } else if (fun.name === '#concat') {
                 if (Helper.is_array(template[key])) {
                   result = [];
@@ -493,8 +531,6 @@
                   // only include if the evaluation is truthy
                   result[key] = filled;
                 }
-              } else if (fun && fun.name === '#template') {
-                result[key] = TRANSFORM.parseTemplate(template[key],data,key)
               }
               else {
                 var item = TRANSFORM.run(template[key], data);
@@ -515,21 +551,21 @@
       }
       return result;
     },
-    parseTemplate: function(template, data, parentKey){
-      const fun = TRANSFORM.tokenize(template)
+    parseTemplate: function(data, args){
       const templatesFolder = config.templatesFolder || './';
       const formattersFolder = config.formattersFolder || './';
-      const tokens = fun.expression.split(' ').filter(str => str.trim());
+      const {template, formatter, inputProperty, constantData} = args
+      data = Object.assign({},inputProperty ? Helper.get(data, inputProperty) : data, constantData)
       try {
-        const newTemplate = Helper.load_file(templatesFolder, tokens[0]);
-        const formatterFunction = tokens[1]
-          ? Helper.load_file(formattersFolder, tokens[1])
-          : data => data;
-        const formattedData = formatterFunction(Object.assign({}, data), parentKey);
+        const newTemplate = Helper.load_file(templatesFolder, template);
+        const formatterFunction = formatter
+          ? Helper.load_file(formattersFolder, formatter)
+          : (x,y) => x;
+        const formattedData = formatterFunction(data);
         return TRANSFORM.run(newTemplate, formattedData);
       } catch(err) {
         console.error(err)
-        return template;
+        return "";
       }
     },
     fillout: function(data, template, raw) {
@@ -538,10 +574,7 @@
       var replaced = template;
       // Run fillout() only if it's a template. Otherwise just return the original string
       
-      if (template && template.indexOf('#template')!=-1) {
-        replaced = TRANSFORM.parseTemplate(template,data)
-      }
-      else if (Helper.is_template(template)){
+      if (Helper.is_template(template)){
         var re = /\{\{(.*?)\}\}/g;
         // variables are all instances of {{ }} in the current expression
         // for example '{{this.item}} is {{this.user}}'s' has two variables: ['this.item', 'this.user']
