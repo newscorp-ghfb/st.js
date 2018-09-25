@@ -1,3 +1,49 @@
+# Newscorp Extension
+Please see https://selecttransform.github.io/site/transform.html for other transform functionality.
+
+We extended this library to add the concept of subtemplating. You can define a subtemplate like so:
+```
+"summary": {
+    "{{#template}}":{
+    "template" : "Text",
+    "inputProperty": "summary"
+  }},
+```
+If the Text template is 
+```
+{
+  "text": "{{#? text}}",
+  "style": "{{#? style}}",
+}
+```
+Given data input `{"summary":{"text": "blah blah", "style": "simple"}}`, this would output `{"summary":{"text": "blah blah", "style": "simple"}}`. 
+
+We can also define a formatter, which alters the format of the data passed in to the template, and constantData, which is an object of keys and values that will always be in the subtemplate's namespace. For example, if our data input was instead `{"summary":"blah blah"}` and we want style to be simple for all output, we could have template 
+```
+"summary": {
+    "{{#template}}":{
+    "template" : "Text",
+    "formatter": "summary",
+    "constantData": {
+      "style": "simple"
+    }
+  }}
+```
+Then, if the formatter function was given as:
+```
+function summary(data){
+  const newData = {}
+  newData.summary = {}
+  newData.summary.text = data.summary
+  return newData;
+}
+```
+we would obtain the desired result.
+
+Currently, subtemplates and formatters must each be in their own folder. When loading st.js, you must specify the folders like so:
+`ST.init({"templatesFolder":getFolderPath("templates"),
+  "formattersFolder":getFolderPath("formatters")})`
+
 # ST
 
 JSON Selector + Transformer
