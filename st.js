@@ -9,6 +9,7 @@
     }
     return this;
   };
+  var loadedModules = {}
   var Helper = {
     dottedStringToArray: function(string) {
       return Array.isArray(string) ? string : string.split(/[\s.]+/).filter(p => p !== '');
@@ -68,7 +69,11 @@
       }
     },
     load_file: function(defaultRootPath, filePath) {
+      if(loadedModules[defaultRootPath+filePath]){
+        return loadedModules[defaultRootPath+filePath]
+      }
       let actualPath = filePath;
+
       let loadedFile;
       try {
         loadedFile = require(actualPath);
@@ -81,7 +86,8 @@
           loadedFile = require(actualPath);
         }
       }
-      //console.log(`Loading file ${actualPath}...`);
+      console.log(`Loading file ${actualPath}...`);
+      loadedModules[defaultRootPath+filePath] = loadedFile
       return loadedFile;
     },
   };
