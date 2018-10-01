@@ -235,34 +235,251 @@
   };
   var TRANSFORM = {
     memory: {},
-    transform: function(template, data, injection, serialized) {
-      var selector = null;
-      if (/#include/.test(JSON.stringify(template))) {
-        selector = function(key, value) { return /#include/.test(key) || /#include/.test(value); };
+    transform: function(template, data) {
+      if(typeof template === 'string'){
+        if (!Helper.is_template(template)){
+          return template
+        }
+        var include_string_re = /\{\{([ ]*#include)[ ]*([^ ]*)\}\}/g;
+        if (include_string_re.test(template)) {
+          var fun = TRANSFORM.tokenize(template);
+          if (fun.expression) {
+            // if #include has arguments, evaluate it before attaching
+            return TRANSFORM.fillout(data, '{{' + fun.expression + '}}', true);
+          } else {
+              // shouldn't happen =>
+              // {'wrapper': '{{#include}}'}
+              return template;
+            }
+        }
+        return TRANSFORM.fillout(data, template);
       }
-      var res;
-      if (injection) {
-        // resolve template with selector
-        var resolved_template = SELECT.select(template, selector, serialized)
-          .transform(data, serialized)
-          .root();
-        // apply the resolved template on data
-        res = SELECT.select(data, null, serialized)
-          .inject(injection, serialized)
-          .transformWith(resolved_template, serialized)
-          .root();
-      } else {
-        // no need for separate template resolution step
-        // select the template with selector and transform data
-        res = SELECT.select(template, selector, serialized)
-          .transform(data, serialized)
-          .root();
+      else if (Helper.is_array(template)) {
+        if (Conditional.is(template)) {
+          return Conditional.run(template, data);//TODO rewrite this too
+        } else {
+          return template.map(t => TRANSFORM.run(t, data)).filter(i => !!i)
+        }
       }
-      if (serialized) {
-        // needs to return stringified version
-        return JSON.stringify(res);
-      } else {
-        return res;
+      else if (Object.prototype.toString.call(template) === '[object Object]') {
+        // template is an object
+        var kvWrapper = function(k,v){
+          return {key: k, value: v}
+        }
+        return Object.keys(template).map(key =>{
+          if(!Helper.is_template(key)){
+            if (typeof template[key] === 'string') {
+              const fun = TRANSFORM.tokenize(template[key]);
+              if (fun && fun.name === '#?') {
+                // If the key is a template expression but aren't either #include or #each,
+                // it needs to be parsed
+                const filled = TRANSFORM.fillout(data, '{{' + fun.expression + '}}');
+                if (filled === '{{' + fun.expression + '}}' || !filled) {
+                  // case 1.
+                  // not parsed, which means the evaluation failed.
+
+                  // case 2.
+                  // returns fasly value
+
+                  // both cases mean this key should be excluded
+                  return null
+                }
+                return kvWrapper(key,filled);
+              }
+            }
+            return TRANSFORM.run(template[key], data);
+          }//key must be template expression
+          const fun = TRANSFORM.tokenize(key);
+          if(fun){
+            if (fun.name === '#include') {
+              if(fun.expression){
+                return {key, value:TRANSFORM.fillout(template[key],'{{' + fun.expression + '}}', true)}
+              }
+              return {key, value: template[key]}
+            }
+            else if (fun.name === '#let') {
+                if (Helper.is_array(template[key]) && template[key].length == 2) {
+                  var defs = template[key][0];
+                  var real_template = template[key][1];
+
+                  // 1. Parse the first item to assign variables
+                  var parsed_keys = TRANSFORM.run(defs, data);
+
+                  // 2. modify the data
+                  for(var parsed_key in parsed_keys) {
+                    TRANSFORM.memory[parsed_key] = parsed_keys[parsed_key];
+                    data[parsed_key] = parsed_keys[parsed_key];
+                  }
+
+                  // 2. Pass it into TRANSFORM.run
+                  return {key, value:TRANSFORM.run(real_template, data)};
+                }
+            }
+            else if(fun.name === '#template'){
+              if(Helper.is_object(template[key])){
+                return TRANSFORM.parseTemplate(data, template[key])
+              }
+              else{
+                return template[key]
+              }
+            }
+          }
+          else { // end of if (fun)
+              // If the key is a template expression but aren't either #include or #each,
+              // it needs to be parsed
+
+              var k = TRANSFORM.fillout(data, key);
+              var v = TRANSFORM.fillout(data, template[key]);
+              if (k !== undefined && v !== undefined) {
+                result[k] = v;
+              }
+          }
+        }).filter(item=>!!item)
+
+        
+            if (fun) {
+              } else if(fun.name === '#template'){
+                if(Helper.is_object(template[key])){
+                  result = TRANSFORM.parseTemplate(data, template[key])
+                }
+                else{
+                  result = template[key]
+                }
+              } else if (fun.name === '#concat') {
+                if (Helper.is_array(template[key])) {
+                  result = [];
+                  template[key].forEach(function(concat_item) {
+                    var res = TRANSFORM.run(concat_item, data);
+                    result = result.concat(res);
+                  });
+
+                  if (/\{\{(.*?)\}\}/.test(JSON.stringify(result))) {
+                    // concat should only trigger if all of its children
+                    // have successfully parsed.
+                    // so check for any template expression in the end result
+                    // and if there is one, revert to the original template
+                    result = template;
+                  }
+                }
+              } else if (fun.name === '#merge') {
+                if (Helper.is_array(template[key])) {
+                  result = {};
+                  template[key].forEach(function(merge_item) {
+                    var res = TRANSFORM.run(merge_item, data);
+                    for (var key in res) {
+                      result[key] = res[key];
+                    }
+                  });
+                  // clean up $index from the result
+                  // necessary because #merge merges multiple objects into one,
+                  // and one of them may be 'this', in which case the $index attribute
+                  // will have snuck into the final result
+                  if(typeof data === 'object') {
+                    delete result["$index"];
+
+                    // #let handling
+                    for (var declared_vars in TRANSFORM.memory) {
+                      delete result[declared_vars];
+                    }
+                  } else {
+                    delete String.prototype.$index;
+                    delete Number.prototype.$index;
+                    delete Function.prototype.$index;
+                    delete Array.prototype.$index;
+                    delete Boolean.prototype.$index;
+
+                    // #let handling
+                    for (var declared_vars in TRANSFORM.memory) {
+                      delete String.prototype[declared_vars];
+                      delete Number.prototype[declared_vars];
+                      delete Function.prototype[declared_vars];
+                      delete Array.prototype[declared_vars];
+                      delete Boolean.prototype[declared_vars];
+                    }
+                  }
+                }
+              } else if (fun.name === '#each') {
+                // newData will be filled with parsed results
+                var newData = TRANSFORM.fillout(data, '{{' + fun.expression + '}}', true);
+
+                // Ideally newData should be an array since it was prefixed by #each
+                if (newData && Helper.is_array(newData)) {
+                  result = [];
+                  for (var index = 0; index < newData.length; index++) {
+                    // temporarily set $index
+                    if(typeof newData[index] === 'object') {
+                      newData[index]["$index"] = index;
+                      // #let handling
+                      for (var declared_vars in TRANSFORM.memory) {
+                        newData[index][declared_vars] = TRANSFORM.memory[declared_vars];
+                      }
+                    } else {
+                      String.prototype.$index = index;
+                      Number.prototype.$index = index;
+                      Function.prototype.$index = index;
+                      Array.prototype.$index = index;
+                      Boolean.prototype.$index = index;
+                      // #let handling
+                      for (var declared_vars in TRANSFORM.memory) {
+                        String.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
+                        Number.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
+                        Function.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
+                        Array.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
+                        Boolean.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
+                      }
+                    }
+
+                    // run
+                    var loop_item = TRANSFORM.run(template[key], newData[index]);
+
+                    // clean up $index
+                    if(typeof newData[index] === 'object') {
+                      delete newData[index]["$index"];
+                      // #let handling
+                      for (var declared_vars in TRANSFORM.memory) {
+                        delete newData[index][declared_vars];
+                      }
+                    } else {
+                      delete String.prototype.$index;
+                      delete Number.prototype.$index;
+                      delete Function.prototype.$index;
+                      delete Array.prototype.$index;
+                      delete Boolean.prototype.$index;
+                      // #let handling
+                      for (var declared_vars in TRANSFORM.memory) {
+                        delete String.prototype[declared_vars];
+                        delete Number.prototype[declared_vars];
+                        delete Function.prototype[declared_vars];
+                        delete Array.prototype[declared_vars];
+                        delete Boolean.prototype[declared_vars];
+                      }
+                    }
+
+                    if (loop_item) {
+                      // only push when the result is not null
+                      // null could mean #if clauses where nothing matched => In this case instead of rendering 'null', should just skip it completely
+                      result.push(loop_item);
+                    }
+                  }
+                } else {
+                  // In case it's not an array, it's an exception, since it was prefixed by #each.
+                  // This probably means this #each is not for the current variable
+                  // For example {{#each items}} may not be an array, but just leave it be, so
+                  // But don't get rid of it,
+                  // Instead, just leave it as template
+                  // So some other parse run could fill it in later.
+                  result = template;
+                }
+              } // end of #each
+            } else { // end of if (fun)
+              // If the key is a template expression but aren't either #include or #each,
+              // it needs to be parsed
+              var k = TRANSFORM.fillout(data, key);
+              var v = TRANSFORM.fillout(data, template[key]);
+              if (k !== undefined && v !== undefined) {
+                result[k] = v;
+              }
+            }
       }
     },
     tokenize: function(str) {
@@ -347,6 +564,9 @@
           } else {
             // no argument, simply attach the child
             result = template[include_keys[0]];
+          }
+          if (!Helper.is_template(key)){
+
           }
         }
 
@@ -705,305 +925,7 @@
         return template;
       }
     },
-  };
-  var SELECT = {
-    // current: currently accessed object
-    // path: the path leading to this item
-    // filter: The filter function to decide whether to select or not
-    $val: null,
-    $selected: [],
-    $injected: [],
-    $progress: null,
-    exec: function(current, path, filter) {
-      // if current matches the pattern, put it in the selected array
-      if (typeof current === 'string') {
-        // leaf node should be ignored
-        // we're lookin for keys only
-      } else if (Helper.is_array(current)) {
-        for (var i=0; i<current.length; i++) {
-          SELECT.exec(current[i], path+'['+i+']', filter);
-        }
-      } else {
-        // object
-        for (var key in current) {
-          // '$root' is a special key that links to the root node
-          // so shouldn't be used to iterate
-          if (key !== '$root') {
-            if (filter(key, current[key])) {
-              var index = SELECT.$selected.length;
-              SELECT.$selected.push({
-                index: index,
-                key: key,
-                path: path,
-                object: current,
-                value: current[key],
-              });
-            }
-            SELECT.exec(current[key], path+'["'+key+'"]', filter);
-          }
-        }
-      }
-    },
-    inject: function(obj, serialized) {
-      SELECT.$injected = obj;
-      try {
-        if (serialized) SELECT.$injected = JSON.parse(obj);
-      } catch (error) { }
-
-      if (Object.keys(SELECT.$injected).length > 0) {
-        SELECT.select(SELECT.$injected);
-      }
-      return SELECT;
-    },
-    // returns the object itself
-    select: function(obj, filter, serialized) {
-      // iterate '$selected'
-      //
-      /*
-      SELECT.$selected = [{
-        value {
-          '{{#include}}': {
-            '{{#each items}}': {
-              'type': 'label',
-              'text': '{{name}}'
-            }
-          }
-        },
-        path: '$jason.head.actions.$load'
-        ...
-      }]
-      */
-      var json = obj;
-      try {
-        if (serialized) json = JSON.parse(obj);
-      } catch (error) { }
-
-      if (filter) {
-        SELECT.$selected = [];
-        SELECT.exec(json, '', filter);
-      } else {
-        SELECT.$selected = null;
-      }
-
-      if (json && (Helper.is_array(json) || typeof json === 'object')) {
-        if (!SELECT.$progress) {
-          // initialize
-          if (Helper.is_array(json)) {
-            SELECT.$val = [];
-            SELECT.$selected_root = [];
-          } else {
-            SELECT.$val = {};
-            SELECT.$selected_root = {};
-          }
-        }
-        Object.keys(json).forEach(function(key) {
-        //for (var key in json) {
-          SELECT.$val[key] = json[key];
-          SELECT.$selected_root[key] = json[key];
-        });
-      } else {
-        SELECT.$val = json;
-        SELECT.$selected_root = json;
-      }
-      SELECT.$progress = true; // set the 'in progress' flag
-
-      return SELECT;
-    },
-    transformWith: function(obj, serialized) {
-      SELECT.$parsed = [];
-      SELECT.$progress = null;
-      /*
-      *  'selected' is an array that contains items that looks like this:
-      *  {
-      *    key: The selected key,
-      *    path: The path leading down to the selected key,
-      *    object: The entire object that contains the currently selected key/val pair
-      *    value: The selected value
-      *  }
-      */
-      var template = obj;
-      try {
-        if (serialized) template = JSON.parse(obj);
-      } catch (error) { }
-
-      // Setting $root
-      SELECT.$template_root = template;
-      String.prototype.$root = SELECT.$selected_root;
-      Number.prototype.$root = SELECT.$selected_root;
-      Function.prototype.$root = SELECT.$selected_root;
-      Array.prototype.$root = SELECT.$selected_root;
-      Boolean.prototype.$root = SELECT.$selected_root;
-      root = SELECT.$selected_root;
-      // generate new $selected_root
-      if (SELECT.$selected && SELECT.$selected.length > 0) {
-        SELECT.$selected.sort(function(a, b) {
-          // sort by path length, so that deeper level items will be replaced first
-          // TODO: may need to look into edge cases
-          return b.path.length - a.path.length;
-        }).forEach(function(selection) {
-        //SELECT.$selected.forEach(function(selection) {
-          // parse selected
-          var parsed_object = TRANSFORM.run(template, selection.object);
-
-          // apply the result to root
-          SELECT.$selected_root = Helper.resolve(SELECT.$selected_root, selection.path, parsed_object);
-
-          // update selected object with the parsed result
-          selection.object = parsed_object;
-        });
-        SELECT.$selected.sort(function(a, b) {
-          return a.index - b.index;
-        });
-      } else {
-        var parsed_object = TRANSFORM.run(template, SELECT.$selected_root);
-        // apply the result to root
-        SELECT.$selected_root = Helper.resolve(SELECT.$selected_root, '', parsed_object);
-      }
-      delete String.prototype.$root;
-      delete Number.prototype.$root;
-      delete Function.prototype.$root;
-      delete Array.prototype.$root;
-      delete Boolean.prototype.$root;
-      return SELECT;
-    },
-    transform: function(obj, serialized) {
-      SELECT.$parsed = [];
-      SELECT.$progress = null;
-      /*
-      'selected' is an array that contains items that looks like this:
-
-      {
-        key: The selected key,
-        path: The path leading down to the selected key,
-        object: The entire object that contains the currently selected key/val pair
-        value: The selected value
-      }
-      */
-      var data = obj;
-      try {
-        if (serialized) data = JSON.parse(obj);
-      } catch (error) { }
-
-      // since we're assuming that the template has been already selected, the $template_root is $selected_root
-      SELECT.$template_root = SELECT.$selected_root;
-
-      String.prototype.$root = data;
-      Number.prototype.$root = data;
-      Function.prototype.$root = data;
-      Array.prototype.$root = data;
-      Boolean.prototype.$root = data;
-      root = data;
-
-      if (SELECT.$selected && SELECT.$selected.length > 0) {
-        SELECT.$selected.sort(function(a, b) {
-          // sort by path length, so that deeper level items will be replaced first
-          // TODO: may need to look into edge cases
-          return b.path.length - a.path.length;
-        }).forEach(function(selection) {
-          // parse selected
-          var parsed_object = TRANSFORM.run(selection.object, data);
-          // apply the result to root
-          SELECT.$template_root = Helper.resolve(SELECT.$template_root, selection.path, parsed_object);
-          SELECT.$selected_root = SELECT.$template_root;
-
-          // update selected object with the parsed result
-          selection.object = parsed_object;
-        });
-        SELECT.$selected.sort(function(a, b) {
-          return a.index - b.index;
-        });
-      } else {
-        var parsed_object = TRANSFORM.run(SELECT.$selected_root, data);
-        // apply the result to root
-        SELECT.$template_root = Helper.resolve(SELECT.$template_root, '', parsed_object);
-        SELECT.$selected_root = SELECT.$template_root;
-      }
-      delete String.prototype.$root;
-      delete Number.prototype.$root;
-      delete Function.prototype.$root;
-      delete Array.prototype.$root;
-      delete Boolean.prototype.$root;
-      return SELECT;
-    },
-
-    // Terminal methods
-    objects: function() {
-      SELECT.$progress = null;
-      if (SELECT.$selected) {
-        return SELECT.$selected.map(function(item) { return item.object; });
-      } else {
-        return [SELECT.$selected_root];
-      }
-    },
-    keys: function() {
-      SELECT.$progress = null;
-      if (SELECT.$selected) {
-        return SELECT.$selected.map(function(item) { return item.key; });
-      } else {
-        if (Array.isArray(SELECT.$selected_root)) {
-          return Object.keys(SELECT.$selected_root).map(function(key) { return parseInt(key); });
-        } else {
-          return Object.keys(SELECT.$selected_root);
-        }
-      }
-    },
-    paths: function() {
-      SELECT.$progress = null;
-      if (SELECT.$selected) {
-        return SELECT.$selected.map(function(item) { return item.path; });
-      } else {
-        if (Array.isArray(SELECT.$selected_root)) {
-          return Object.keys(SELECT.$selected_root).map(function(item) {
-            // key is integer
-            return '[' + item + ']';
-          });
-        } else {
-          return Object.keys(SELECT.$selected_root).map(function(item) {
-            // key is string
-            return '["' + item + '"]';
-          });
-        }
-      }
-    },
-    values: function() {
-      SELECT.$progress = null;
-      if (SELECT.$selected) {
-        return SELECT.$selected.map(function(item) { return item.value; });
-      } else {
-        return Object.values(SELECT.$selected_root);
-      }
-    },
-    root: function() {
-      SELECT.$progress = null;
-      return SELECT.$selected_root;
-    },
-  };
-
-  // Native JSON object override
-  var _stringify = JSON.stringify;
-  JSON.stringify = function(val, replacer, spaces) {
-    var t = typeof val;
-    if (['number', 'string', 'boolean'].indexOf(t) !== -1) {
-      return _stringify(val, replacer, spaces);
-    }
-    if (!replacer) {
-      return _stringify(val, function(key, val) {
-        if (SELECT.$injected && SELECT.$injected.length > 0 && SELECT.$injected.indexOf(key) !== -1) { return undefined; }
-        if (key === '$root' || key === '$index') {
-          return undefined;
-        }
-        if (key in TRANSFORM.memory) {
-          return undefined;
-        }
-        if (typeof val === 'function') {
-          return '(' + val.toString() + ')';
-        } else {
-          return val;
-        }
-      }, spaces);
-    } else {
-      return _stringify(val, replacer, spaces);
-    }
+    
   };
 
   // Export
