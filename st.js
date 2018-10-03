@@ -258,229 +258,83 @@
         if (Conditional.is(template)) {
           return Conditional.run(template, data);//TODO rewrite this too
         } else {
-          return template.map(t => TRANSFORM.run(t, data)).filter(i => !!i)
+          return template.map(t => TRANSFORM.transform(t, data)).filter(i => !!i)
         }
       }
       else if (Object.prototype.toString.call(template) === '[object Object]') {
         // template is an object
-        var kvWrapper = function(k,v){
-          return {key: k, value: v}
-        }
         return Object.keys(template).map(key =>{
-          if(!Helper.is_template(key)){
-            if (typeof template[key] === 'string') {
-              const fun = TRANSFORM.tokenize(template[key]);
-              if (fun && fun.name === '#?') {
-                // If the key is a template expression but aren't either #include or #each,
-                // it needs to be parsed
-                const filled = TRANSFORM.fillout(data, '{{' + fun.expression + '}}');
-                if (filled === '{{' + fun.expression + '}}' || !filled) {
-                  // case 1.
-                  // not parsed, which means the evaluation failed.
-
-                  // case 2.
-                  // returns fasly value
-
-                  // both cases mean this key should be excluded
-                  return null
-                }
-                return kvWrapper(key,filled);
-              }
-            }
-            return TRANSFORM.run(template[key], data);
-          }//key must be template expression
-          const fun = TRANSFORM.tokenize(key);
-          if(fun){
-            if (fun.name === '#include') {
-              if(fun.expression){
-                return {key, value:TRANSFORM.fillout(template[key],'{{' + fun.expression + '}}', true)}
-              }
-              return {key, value: template[key]}
-            }
-            else if (fun.name === '#let') {
-                if (Helper.is_array(template[key]) && template[key].length == 2) {
-                  var defs = template[key][0];
-                  var real_template = template[key][1];
-
-                  // 1. Parse the first item to assign variables
-                  var parsed_keys = TRANSFORM.run(defs, data);
-
-                  // 2. modify the data
-                  for(var parsed_key in parsed_keys) {
-                    TRANSFORM.memory[parsed_key] = parsed_keys[parsed_key];
-                    data[parsed_key] = parsed_keys[parsed_key];
-                  }
-
-                  // 2. Pass it into TRANSFORM.run
-                  return {key, value:TRANSFORM.run(real_template, data)};
-                }
-            }
-            else if(fun.name === '#template'){
-              if(Helper.is_object(template[key])){
-                return TRANSFORM.parseTemplate(data, template[key])
-              }
-              else{
-                return template[key]
-              }
-            }
-          }
-          else { // end of if (fun)
+          if (typeof template[key] === 'string') {
+            const fun = TRANSFORM.tokenize(template[key]);
+            if (fun && fun.name === '#?') {
               // If the key is a template expression but aren't either #include or #each,
               // it needs to be parsed
+              const filled = TRANSFORM.fillout(data, '{{' + fun.expression + '}}');
+              if (filled === '{{' + fun.expression + '}}' || !filled) {
+                // case 1.
+                // not parsed, which means the evaluation failed.
 
-              var k = TRANSFORM.fillout(data, key);
-              var v = TRANSFORM.fillout(data, template[key]);
-              if (k !== undefined && v !== undefined) {
-                result[k] = v;
+                // case 2.
+                // returns fasly value
+
+                // both cases mean this key should be excluded
+                return null
               }
+              return filled;
+            }
           }
-        }).filter(item=>!!item)
-
-        
-            if (fun) {
-              } else if(fun.name === '#template'){
+          const nextKeys = Object.keys(template[key])
+          if(Helper.is_object(template[key]) && nextKeys.length==1){
+            const fun = TRANSFORM.tokenize(nextKeys[0]);
+            const funTemplate = template[key][nextKeys[0]]
+            if(fun){
+              if(fun.name === '#include'){
+                return TRANSFORM.fillout(funTemplate,'{{' + fun.expression + '}}', true)
+              }
+              else if(fun.name === '#template'){
                 if(Helper.is_object(template[key])){
-                  result = TRANSFORM.parseTemplate(data, template[key])
+                  return TRANSFORM.parseTemplate(data, funTemplate)
                 }
                 else{
-                  result = template[key]
+                  return funTemplate
                 }
-              } else if (fun.name === '#concat') {
-                if (Helper.is_array(template[key])) {
-                  result = [];
-                  template[key].forEach(function(concat_item) {
-                    var res = TRANSFORM.run(concat_item, data);
-                    result = result.concat(res);
-                  });
-
-                  if (/\{\{(.*?)\}\}/.test(JSON.stringify(result))) {
-                    // concat should only trigger if all of its children
-                    // have successfully parsed.
-                    // so check for any template expression in the end result
-                    // and if there is one, revert to the original template
-                    result = template;
-                  }
+              }
+              else if (fun.name === '#concat') {
+                if (Helper.is_array(funTemplate)) {
+                  return funTemplate.reduce((list, concat_item) => {
+                    return list.concat(TRANSFORM.transform(concat_item, data))
+                  }, [])
                 }
-              } else if (fun.name === '#merge') {
-                if (Helper.is_array(template[key])) {
-                  result = {};
-                  template[key].forEach(function(merge_item) {
-                    var res = TRANSFORM.run(merge_item, data);
-                    for (var key in res) {
-                      result[key] = res[key];
-                    }
-                  });
-                  // clean up $index from the result
-                  // necessary because #merge merges multiple objects into one,
-                  // and one of them may be 'this', in which case the $index attribute
-                  // will have snuck into the final result
-                  if(typeof data === 'object') {
-                    delete result["$index"];
-
-                    // #let handling
-                    for (var declared_vars in TRANSFORM.memory) {
-                      delete result[declared_vars];
-                    }
-                  } else {
-                    delete String.prototype.$index;
-                    delete Number.prototype.$index;
-                    delete Function.prototype.$index;
-                    delete Array.prototype.$index;
-                    delete Boolean.prototype.$index;
-
-                    // #let handling
-                    for (var declared_vars in TRANSFORM.memory) {
-                      delete String.prototype[declared_vars];
-                      delete Number.prototype[declared_vars];
-                      delete Function.prototype[declared_vars];
-                      delete Array.prototype[declared_vars];
-                      delete Boolean.prototype[declared_vars];
-                    }
-                  }
+                else{
+                  return funTemplate
                 }
-              } else if (fun.name === '#each') {
-                // newData will be filled with parsed results
+              }
+              else if (fun.name === '#merge') {
+                if (Helper.is_array(funTemplate)) {
+                  return funTemplate.reduce((obj, merge) => {
+                    return Object.assign(obj,TRANSFORM.transform(merge))
+                  }, {})
+                }else{
+                  return funTemplate
+                }
+              }
+              else if (fun.name == '#each'){
                 var newData = TRANSFORM.fillout(data, '{{' + fun.expression + '}}', true);
-
-                // Ideally newData should be an array since it was prefixed by #each
                 if (newData && Helper.is_array(newData)) {
-                  result = [];
-                  for (var index = 0; index < newData.length; index++) {
-                    // temporarily set $index
-                    if(typeof newData[index] === 'object') {
-                      newData[index]["$index"] = index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        newData[index][declared_vars] = TRANSFORM.memory[declared_vars];
-                      }
-                    } else {
-                      String.prototype.$index = index;
-                      Number.prototype.$index = index;
-                      Function.prototype.$index = index;
-                      Array.prototype.$index = index;
-                      Boolean.prototype.$index = index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        String.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Number.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Function.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Array.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Boolean.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                      }
-                    }
-
-                    // run
-                    var loop_item = TRANSFORM.run(template[key], newData[index]);
-
-                    // clean up $index
-                    if(typeof newData[index] === 'object') {
-                      delete newData[index]["$index"];
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        delete newData[index][declared_vars];
-                      }
-                    } else {
-                      delete String.prototype.$index;
-                      delete Number.prototype.$index;
-                      delete Function.prototype.$index;
-                      delete Array.prototype.$index;
-                      delete Boolean.prototype.$index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        delete String.prototype[declared_vars];
-                        delete Number.prototype[declared_vars];
-                        delete Function.prototype[declared_vars];
-                        delete Array.prototype[declared_vars];
-                        delete Boolean.prototype[declared_vars];
-                      }
-                    }
-
-                    if (loop_item) {
-                      // only push when the result is not null
-                      // null could mean #if clauses where nothing matched => In this case instead of rendering 'null', should just skip it completely
-                      result.push(loop_item);
-                    }
-                  }
-                } else {
-                  // In case it's not an array, it's an exception, since it was prefixed by #each.
-                  // This probably means this #each is not for the current variable
-                  // For example {{#each items}} may not be an array, but just leave it be, so
-                  // But don't get rid of it,
-                  // Instead, just leave it as template
-                  // So some other parse run could fill it in later.
-                  result = template;
+                  return newData.map( n => {
+                    return TRANSFORM.transform(funTemplate, n)
+                  })
                 }
-              } // end of #each
-            } else { // end of if (fun)
-              // If the key is a template expression but aren't either #include or #each,
-              // it needs to be parsed
-              var k = TRANSFORM.fillout(data, key);
-              var v = TRANSFORM.fillout(data, template[key]);
-              if (k !== undefined && v !== undefined) {
-                result[k] = v;
+                else{
+                  return funTemplate
+                }
               }
             }
+          }//end handle potential functions. 
+          return TRANSFORM.transform(template[key], data);
+        }).filter(item=>!!item)
       }
+      return template//not a string nor array nor object. just return the template
     },
     tokenize: function(str) {
       // INPUT : string
@@ -507,276 +361,6 @@
       }
       return null;
     },
-    run: function(template, data) {
-      var result;
-      var fun;
-      if (typeof template === 'string') {
-        // Leaf node, so call TRANSFORM.fillout()
-        if (Helper.is_template(template)) {
-          var include_string_re = /\{\{([ ]*#include)[ ]*([^ ]*)\}\}/g;
-          if (include_string_re.test(template)) {
-            fun = TRANSFORM.tokenize(template);
-            if (fun.expression) {
-              // if #include has arguments, evaluate it before attaching
-              result = TRANSFORM.fillout(data, '{{' + fun.expression + '}}', true);
-            } else {
-              // shouldn't happen =>
-              // {'wrapper': '{{#include}}'}
-              result = template;
-            }
-          } else {
-            // non-#include
-            result = TRANSFORM.fillout(data, template);
-          }
-        } else {
-          result = template;
-        }
-      } else if (Helper.is_array(template)) {
-        if (Conditional.is(template)) {
-          result = Conditional.run(template, data);
-        } else {
-          result = [];
-          for (var i = 0; i < template.length; i++) {
-            var item = TRANSFORM.run(template[i], data);
-            if (item) {
-              // only push when the result is not null
-              // null could mean #if clauses where nothing matched => In this case instead of rendering 'null', should just skip it completely
-              // Todo : Distinguish between #if arrays and ordinary arrays, and return null for ordinary arrays
-              result.push(item);
-            }
-          }
-        }
-      } else if (Object.prototype.toString.call(template) === '[object Object]') {
-        // template is an object
-        result = {};
-
-        // ## Handling #include
-        // This needs to precede everything else since it's meant to be overwritten
-        // in case of collision
-        var include_object_re = /\{\{([ ]*#include)[ ]*(.*)\}\}/;
-        var include_keys = Object.keys(template).filter(function(key) { return include_object_re.test(key); });
-        if (include_keys.length > 0) {
-        // find the first key with #include
-          fun = TRANSFORM.tokenize(include_keys[0]);
-          if (fun.expression) {
-            // if #include has arguments, evaluate it before attaching
-            result = TRANSFORM.fillout(template[include_keys[0]], '{{' + fun.expression + '}}', true);
-          } else {
-            // no argument, simply attach the child
-            result = template[include_keys[0]];
-          }
-          if (!Helper.is_template(key)){
-
-          }
-        }
-
-        for (var key in template) {
-          // Checking to see if the key contains template..
-          // Currently the only case for this are '#each' and '#include'
-          if (Helper.is_template(key)) {
-            fun = TRANSFORM.tokenize(key);
-            if (fun) {
-              if (fun.name === '#include') {
-                // this was handled above (before the for loop) so just ignore
-              } else if (fun.name === '#let') {
-                if (Helper.is_array(template[key]) && template[key].length == 2) {
-                  var defs = template[key][0];
-                  var real_template = template[key][1];
-
-                  // 1. Parse the first item to assign variables
-                  var parsed_keys = TRANSFORM.run(defs, data);
-
-                  // 2. modify the data
-                  for(var parsed_key in parsed_keys) {
-                    TRANSFORM.memory[parsed_key] = parsed_keys[parsed_key];
-                    data[parsed_key] = parsed_keys[parsed_key];
-                  }
-
-                  // 2. Pass it into TRANSFORM.run
-                  result = TRANSFORM.run(real_template, data);
-                }
-              } else if(fun.name === '#template'){
-                if(Helper.is_object(template[key])){
-                  result = TRANSFORM.parseTemplate(data, template[key])
-                }
-                else{
-                  result = template[key]
-                }
-              } else if (fun.name === '#concat') {
-                if (Helper.is_array(template[key])) {
-                  result = [];
-                  template[key].forEach(function(concat_item) {
-                    var res = TRANSFORM.run(concat_item, data);
-                    result = result.concat(res);
-                  });
-
-                  if (/\{\{(.*?)\}\}/.test(JSON.stringify(result))) {
-                    // concat should only trigger if all of its children
-                    // have successfully parsed.
-                    // so check for any template expression in the end result
-                    // and if there is one, revert to the original template
-                    result = template;
-                  }
-                }
-              } else if (fun.name === '#merge') {
-                if (Helper.is_array(template[key])) {
-                  result = {};
-                  template[key].forEach(function(merge_item) {
-                    var res = TRANSFORM.run(merge_item, data);
-                    for (var key in res) {
-                      result[key] = res[key];
-                    }
-                  });
-                  // clean up $index from the result
-                  // necessary because #merge merges multiple objects into one,
-                  // and one of them may be 'this', in which case the $index attribute
-                  // will have snuck into the final result
-                  if(typeof data === 'object') {
-                    delete result["$index"];
-
-                    // #let handling
-                    for (var declared_vars in TRANSFORM.memory) {
-                      delete result[declared_vars];
-                    }
-                  } else {
-                    delete String.prototype.$index;
-                    delete Number.prototype.$index;
-                    delete Function.prototype.$index;
-                    delete Array.prototype.$index;
-                    delete Boolean.prototype.$index;
-
-                    // #let handling
-                    for (var declared_vars in TRANSFORM.memory) {
-                      delete String.prototype[declared_vars];
-                      delete Number.prototype[declared_vars];
-                      delete Function.prototype[declared_vars];
-                      delete Array.prototype[declared_vars];
-                      delete Boolean.prototype[declared_vars];
-                    }
-                  }
-                }
-              } else if (fun.name === '#each') {
-                // newData will be filled with parsed results
-                var newData = TRANSFORM.fillout(data, '{{' + fun.expression + '}}', true);
-
-                // Ideally newData should be an array since it was prefixed by #each
-                if (newData && Helper.is_array(newData)) {
-                  result = [];
-                  for (var index = 0; index < newData.length; index++) {
-                    // temporarily set $index
-                    if(typeof newData[index] === 'object') {
-                      newData[index]["$index"] = index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        newData[index][declared_vars] = TRANSFORM.memory[declared_vars];
-                      }
-                    } else {
-                      String.prototype.$index = index;
-                      Number.prototype.$index = index;
-                      Function.prototype.$index = index;
-                      Array.prototype.$index = index;
-                      Boolean.prototype.$index = index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        String.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Number.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Function.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Array.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                        Boolean.prototype[declared_vars] = TRANSFORM.memory[declared_vars];
-                      }
-                    }
-
-                    // run
-                    var loop_item = TRANSFORM.run(template[key], newData[index]);
-
-                    // clean up $index
-                    if(typeof newData[index] === 'object') {
-                      delete newData[index]["$index"];
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        delete newData[index][declared_vars];
-                      }
-                    } else {
-                      delete String.prototype.$index;
-                      delete Number.prototype.$index;
-                      delete Function.prototype.$index;
-                      delete Array.prototype.$index;
-                      delete Boolean.prototype.$index;
-                      // #let handling
-                      for (var declared_vars in TRANSFORM.memory) {
-                        delete String.prototype[declared_vars];
-                        delete Number.prototype[declared_vars];
-                        delete Function.prototype[declared_vars];
-                        delete Array.prototype[declared_vars];
-                        delete Boolean.prototype[declared_vars];
-                      }
-                    }
-
-                    if (loop_item) {
-                      // only push when the result is not null
-                      // null could mean #if clauses where nothing matched => In this case instead of rendering 'null', should just skip it completely
-                      result.push(loop_item);
-                    }
-                  }
-                } else {
-                  // In case it's not an array, it's an exception, since it was prefixed by #each.
-                  // This probably means this #each is not for the current variable
-                  // For example {{#each items}} may not be an array, but just leave it be, so
-                  // But don't get rid of it,
-                  // Instead, just leave it as template
-                  // So some other parse run could fill it in later.
-                  result = template;
-                }
-              } // end of #each
-            } else { // end of if (fun)
-              // If the key is a template expression but aren't either #include or #each,
-              // it needs to be parsed
-              var k = TRANSFORM.fillout(data, key);
-              var v = TRANSFORM.fillout(data, template[key]);
-              if (k !== undefined && v !== undefined) {
-                result[k] = v;
-              }
-            }
-          } else {
-            // Helper.is_template(key) was false, which means the key was not a template (hardcoded string)
-            if (typeof template[key] === 'string') {
-              fun = TRANSFORM.tokenize(template[key]);
-              if (fun && fun.name === '#?') {
-                // If the key is a template expression but aren't either #include or #each,
-                // it needs to be parsed
-                var filled = TRANSFORM.fillout(data, '{{' + fun.expression + '}}');
-                if (filled === '{{' + fun.expression + '}}' || !filled) {
-                  // case 1.
-                  // not parsed, which means the evaluation failed.
-
-                  // case 2.
-                  // returns fasly value
-
-                  // both cases mean this key should be excluded
-                } else {
-                  // only include if the evaluation is truthy
-                  result[key] = filled;
-                }
-              }
-              else {
-                var item = TRANSFORM.run(template[key], data);
-                if (item !== undefined) {
-                  result[key] = item;
-                }
-              }
-            } else {
-              var item = TRANSFORM.run(template[key], data);
-              if (item !== undefined) {
-                result[key] = item;
-              }
-            }
-          }
-        }
-      } else {
-        return template;
-      }
-      return result;
-    },
     parseTemplate: function(data, args){
       const templatesFolder = config.templatesFolder || './';
       const formattersFolder = config.formattersFolder || './';
@@ -788,7 +372,7 @@
           ? Helper.load_file(formattersFolder, formatter)
           : (x,y) => x;
         const formattedData = formatterFunction(data);
-        return TRANSFORM.run(newTemplate, formattedData);
+        return TRANSFORM.transform(newTemplate, formattedData);
       } catch(err) {
         console.error(err)
         return "";
@@ -933,12 +517,9 @@
     var x = {
       TRANSFORM: TRANSFORM,
       transform: TRANSFORM,
-      SELECT: SELECT,
       init: Initialization,
       Conditional: Conditional,
       Helper: Helper,
-      inject: SELECT.inject,
-      select: SELECT.select,
       transform: TRANSFORM.transform,
     };
     if (typeof module !== 'undefined' && module.exports) { exports = module.exports = x; }
@@ -946,8 +527,6 @@
   } else {
     $context.ST = {
       init: Initialization,
-      select: SELECT.select,
-      inject: SELECT.inject,
       transform: TRANSFORM.transform,
     };
   }
