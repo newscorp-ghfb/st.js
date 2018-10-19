@@ -113,8 +113,7 @@
           var res = TRANSFORM.fillout(data, '{{' + expression + '}}');
           if (res === ('{{' + expression + '}}')) {
             // if there was at least one item that was not evaluatable,
-            // we halt parsing and return the template;
-            return template;
+            // we skip this iteration and continue parsing;
           } else {
             if (res) {
               // run the current one and return
